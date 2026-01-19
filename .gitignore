@@ -1,0 +1,38 @@
+# Docs (local only)
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+
+# Temp files
+temp/
+*.tmp
+*.temp
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Output
+output/
+*_reaction.mp4
+
+# Audio temp
+*.wav
+*.mp3
+!example_*.mp3
