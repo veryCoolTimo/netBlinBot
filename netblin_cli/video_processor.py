@@ -169,6 +169,7 @@ class VideoProcessor:
             "-t", str(audio_duration),
             "-c:v", "libx264",
             "-c:a", "aac",
+            "-ar", "44100",  # Унифицируем sample rate
             "-pix_fmt", "yuv420p",
             "-shortest",
             str(output_path)
@@ -192,6 +193,7 @@ class VideoProcessor:
             "-i", str(list_file),
             "-c:v", "libx264",
             "-c:a", "aac",
+            "-ar", "44100",  # Унифицируем sample rate
             str(output_path)
         ]
 
