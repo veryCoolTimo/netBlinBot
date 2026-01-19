@@ -86,12 +86,12 @@ class Pipeline:
             console.print("[bold]3. Транскрипция[/bold]")
             transcript = self.transcriber.transcribe(audio_path, language=language)
             console.print(f"   [green]✓[/green] Язык: {transcript.language}")
-            console.print(f"   [green]✓[/green] Слов: {len(transcript.words)}")
+            console.print(f"   [green]✓[/green] Сегментов: {len(transcript.segments)}")
             console.print()
 
             # 4. LLM обработка
             console.print("[bold]4. Генерация антонимов[/bold]")
-            segments = self.ollama.process_transcript(transcript.to_json())
+            segments = self.ollama.process_segments(transcript.segments)
             console.print(f"   [green]✓[/green] Сегментов: {len(segments)}")
             console.print()
 

@@ -5,13 +5,13 @@ import requests
 from dataclasses import dataclass
 from rich.console import Console
 
-from .config import OLLAMA_URL, OLLAMA_MODEL, LLM_PROMPT
+from .config import OLLAMA_URL, OLLAMA_MODEL
 
 console = Console()
 
 
 @dataclass
-class Segment:
+class ReactionSegment:
     """Сегмент с оригиналом и антонимом."""
     original: str
     antonym: str
@@ -42,74 +42,72 @@ class OllamaClient:
             "prompt": prompt,
             "stream": False,
             "options": {
-                "temperature": 0.7,
-                "num_predict": 4096,
+                "temperature": 0.8,
+                "num_predict": 100,  # Короткий ответ
             }
         }
 
-        resp = requests.post(self.api_generate, json=payload, timeout=300)
+        resp = requests.post(self.api_generate, json=payload, timeout=60)
         resp.raise_for_status()
 
-        return resp.json().get("response", "")
+        return resp.json().get("response", "").strip()
 
-    def _parse_response(self, response: str) -> list[dict]:
-        """Парсит JSON из ответа LLM."""
-        response = response.strip()
+    def generate_antonym(self, text: str) -> str:
+        """Генерирует антоним/противоположность для фразы."""
+        prompt = f"""Переверни смысл фразы на противоположный. Сохрани структуру но замени ключевые слова на антонимы.
 
-        # Убираем markdown блоки
-        if response.startswith("```"):
-            lines = response.split("\n")
-            response = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+Примеры:
+"Я влюбилась в гея" → "я разлюбилась в натурала"
+"что делать?" → "что не делать?"
+"не знаю как быть" → "знаю как не быть"
+"расскажу вам сказку" → "промолчу про правду"
+"далеко за горами" → "близко перед долинами"
 
-        # Ищем JSON массив в ответе
-        start_idx = response.find("[")
-        end_idx = response.rfind("]")
+Фраза: "{text}"
+Противоположность (одна фраза, без пояснений):"""
 
-        if start_idx != -1 and end_idx != -1:
-            response = response[start_idx:end_idx + 1]
+        response = self.generate(prompt)
 
-        return json.loads(response)
+        # Очищаем ответ
+        response = response.strip().strip('"').strip("'")
+        # Убираем возможные префиксы
+        for prefix in ["Противоположность:", "Антоним:", "Ответ:"]:
+            if response.lower().startswith(prefix.lower()):
+                response = response[len(prefix):].strip()
 
-    def process_transcript(self, transcript_json: str) -> list[Segment]:
-        """Обрабатывает транскрипцию и возвращает сегменты с антонимами."""
-        words = json.loads(transcript_json)
+        # Если ответ слишком длинный или пустой
+        if not response or len(response) > len(text) * 3:
+            return "совсем наоборот"
 
+        return response
+
+    def process_segments(self, segments: list) -> list[ReactionSegment]:
+        """Обрабатывает сегменты и генерирует антонимы для каждого."""
         console.print(f"[cyan]Модель:[/cyan] {self.model}")
 
-        # Разбиваем на чанки по ~50 слов
-        chunk_size = 50
-        all_segments = []
+        results = []
 
-        for i in range(0, len(words), chunk_size):
-            chunk = words[i:i + chunk_size]
-            chunk_json = json.dumps(chunk, ensure_ascii=False)
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-            prompt = LLM_PROMPT.format(transcription=chunk_json)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Генерация антонимов", total=len(segments))
 
-            with console.status(f"[bold green]Обрабатываю слова {i+1}-{min(i+chunk_size, len(words))}..."):
-                response = self.generate(prompt)
+            for seg in segments:
+                antonym = self.generate_antonym(seg.text)
 
-            try:
-                data = self._parse_response(response)
-                for item in data:
-                    # Пропускаем сегменты без таймкодов
-                    start_val = item.get("start", "")
-                    end_val = item.get("end", "")
-                    if start_val == "" or end_val == "":
-                        continue
+                results.append(ReactionSegment(
+                    original=seg.text,
+                    antonym=f"Нет блин, {antonym.lower()}",
+                    start=seg.start,
+                    end=seg.end,
+                ))
 
-                    all_segments.append(Segment(
-                        original=item.get("original", ""),
-                        antonym=item.get("antonym", ""),
-                        start=float(start_val),
-                        end=float(end_val),
-                    ))
-            except (json.JSONDecodeError, ValueError) as e:
-                console.print(f"[yellow]Чанк {i//chunk_size + 1} не распарсился, пропускаю[/yellow]")
-                console.print(f"[dim]{response[:200]}[/dim]")
-                continue
+                progress.advance(task)
 
-        if not all_segments:
-            raise ValueError("Не удалось получить ни одного сегмента от LLM")
-
-        return all_segments
+        return results

@@ -167,9 +167,11 @@ class VideoProcessor:
             "-map", "[v]",
             "-map", "1:a",
             "-t", str(audio_duration),
+            "-r", str(int(video_info.fps)),
             "-c:v", "libx264",
             "-c:a", "aac",
-            "-ar", "44100",  # Унифицируем sample rate
+            "-ar", "44100",
+            "-ac", "2",  # Стерео
             "-pix_fmt", "yuv420p",
             "-shortest",
             str(output_path)
