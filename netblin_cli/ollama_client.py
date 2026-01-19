@@ -47,42 +47,69 @@ class OllamaClient:
             }
         }
 
-        resp = requests.post(self.api_generate, json=payload, timeout=120)
+        resp = requests.post(self.api_generate, json=payload, timeout=300)
         resp.raise_for_status()
 
         return resp.json().get("response", "")
 
-    def process_transcript(self, transcript_json: str) -> list[Segment]:
-        """Обрабатывает транскрипцию и возвращает сегменты с антонимами."""
-        prompt = LLM_PROMPT.format(transcription=transcript_json)
-
-        console.print(f"[cyan]Модель:[/cyan] {self.model}")
-
-        with console.status("[bold green]Генерирую антонимы..."):
-            response = self.generate(prompt)
-
-        # Парсим JSON из ответа
-        # LLM может вернуть markdown блок, очищаем
+    def _parse_response(self, response: str) -> list[dict]:
+        """Парсит JSON из ответа LLM."""
         response = response.strip()
+
+        # Убираем markdown блоки
         if response.startswith("```"):
-            # Убираем ```json и ```
             lines = response.split("\n")
             response = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
 
-        try:
-            data = json.loads(response)
-        except json.JSONDecodeError as e:
-            console.print(f"[red]Ошибка парсинга JSON:[/red] {e}")
-            console.print(f"[dim]Ответ LLM:[/dim]\n{response[:500]}")
-            raise ValueError("LLM вернул невалидный JSON")
+        # Ищем JSON массив в ответе
+        start_idx = response.find("[")
+        end_idx = response.rfind("]")
 
-        segments = []
-        for item in data:
-            segments.append(Segment(
-                original=item.get("original", ""),
-                antonym=item.get("antonym", ""),
-                start=float(item.get("start", 0)),
-                end=float(item.get("end", 0)),
-            ))
+        if start_idx != -1 and end_idx != -1:
+            response = response[start_idx:end_idx + 1]
 
-        return segments
+        return json.loads(response)
+
+    def process_transcript(self, transcript_json: str) -> list[Segment]:
+        """Обрабатывает транскрипцию и возвращает сегменты с антонимами."""
+        words = json.loads(transcript_json)
+
+        console.print(f"[cyan]Модель:[/cyan] {self.model}")
+
+        # Разбиваем на чанки по ~50 слов
+        chunk_size = 50
+        all_segments = []
+
+        for i in range(0, len(words), chunk_size):
+            chunk = words[i:i + chunk_size]
+            chunk_json = json.dumps(chunk, ensure_ascii=False)
+
+            prompt = LLM_PROMPT.format(transcription=chunk_json)
+
+            with console.status(f"[bold green]Обрабатываю слова {i+1}-{min(i+chunk_size, len(words))}..."):
+                response = self.generate(prompt)
+
+            try:
+                data = self._parse_response(response)
+                for item in data:
+                    # Пропускаем сегменты без таймкодов
+                    start_val = item.get("start", "")
+                    end_val = item.get("end", "")
+                    if start_val == "" or end_val == "":
+                        continue
+
+                    all_segments.append(Segment(
+                        original=item.get("original", ""),
+                        antonym=item.get("antonym", ""),
+                        start=float(start_val),
+                        end=float(end_val),
+                    ))
+            except (json.JSONDecodeError, ValueError) as e:
+                console.print(f"[yellow]Чанк {i//chunk_size + 1} не распарсился, пропускаю[/yellow]")
+                console.print(f"[dim]{response[:200]}[/dim]")
+                continue
+
+        if not all_segments:
+            raise ValueError("Не удалось получить ни одного сегмента от LLM")
+
+        return all_segments

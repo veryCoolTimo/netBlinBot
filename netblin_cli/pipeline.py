@@ -120,8 +120,9 @@ class Pipeline:
                 task = progress.add_task("TTS", total=len(segments))
                 for i, seg in enumerate(segments):
                     audio_file = TEMP_DIR / f"tts_{i:03d}.mp3"
-                    self.tts.generate(seg.antonym, audio_file)
-                    audio_files.append(audio_file)
+                    # generate возвращает реальный путь (может быть .wav для Silero)
+                    actual_path = self.tts.generate(seg.antonym, audio_file)
+                    audio_files.append(actual_path)
                     progress.advance(task)
             console.print(f"   [green]✓[/green] Создано {len(audio_files)} аудио")
             console.print()
@@ -140,6 +141,10 @@ class Pipeline:
                 task = progress.add_task("Сборка", total=len(segments))
 
                 for i, seg in enumerate(segments):
+                    # Пропускаем сегменты с невалидными таймкодами
+                    if seg.start <= 0 and seg.end <= 0:
+                        continue
+
                     # Вырезаем оригинальный клип
                     original_clip = TEMP_DIR / f"orig_{i:03d}.mp4"
                     self.video_processor.cut_video(

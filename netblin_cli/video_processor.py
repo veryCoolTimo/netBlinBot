@@ -124,7 +124,10 @@ class VideoProcessor:
             str(audio_path)
         ]
         result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        audio_duration = float(result.stdout.strip())
+        duration_str = result.stdout.strip()
+        if not duration_str:
+            raise ValueError(f"Не удалось получить длительность аудио: {audio_path}")
+        audio_duration = float(duration_str)
 
         # Масштабирование картинки под размер видео
         w, h = video_info.width, video_info.height

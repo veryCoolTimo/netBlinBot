@@ -1,11 +1,17 @@
-"""Whisper транскрипция с word-level timestamps."""
+"""Whisper транскрипция через whisper.cpp (быстрая нативная версия)."""
 
 import json
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass
 from rich.console import Console
 
 console = Console()
+
+# whisper.cpp пути
+WHISPER_CPP_PATH = Path.home() / "whisper.cpp"
+WHISPER_BIN = WHISPER_CPP_PATH / "build" / "bin" / "whisper-cli"
+WHISPER_MODEL = WHISPER_CPP_PATH / "models" / "ggml-large-v3.bin"
 
 
 @dataclass
@@ -36,65 +42,95 @@ class TranscriptResult:
 
 
 class Transcriber:
-    """Whisper транскрибер с word-level timestamps."""
+    """Whisper транскрибер через whisper.cpp."""
 
     def __init__(self, model: str = "large-v3"):
         self.model = model
-        self._whisper = None
+
+        # Проверяем наличие whisper.cpp
+        if not WHISPER_BIN.exists():
+            raise FileNotFoundError(
+                f"whisper.cpp не найден: {WHISPER_BIN}\n"
+                "Установи: https://github.com/ggerganov/whisper.cpp"
+            )
+
+        if not WHISPER_MODEL.exists():
+            raise FileNotFoundError(
+                f"Модель не найдена: {WHISPER_MODEL}\n"
+                "Скачай: cd ~/whisper.cpp && ./models/download-ggml-model.sh large-v3"
+            )
 
     def transcribe(self, audio_path: Path, language: str | None = None) -> TranscriptResult:
         """Транскрибирует аудио с word-level timestamps."""
-        from lightning_whisper_mlx.transcribe import transcribe_audio
+        audio_path = Path(audio_path)
+        output_base = audio_path.with_suffix("")
+        output_json = audio_path.with_suffix(".json")
 
-        model_mapping = {
-            "tiny": "mlx-community/whisper-tiny-mlx",
-            "small": "mlx-community/whisper-small-mlx",
-            "base": "mlx-community/whisper-base-mlx",
-            "medium": "mlx-community/whisper-medium-mlx",
-            "large": "mlx-community/whisper-large-mlx",
-            "large-v2": "mlx-community/whisper-large-v2-mlx",
-            "large-v3": "mlx-community/whisper-large-v3-mlx",
-        }
+        console.print(f"[cyan]Модель:[/cyan] {self.model} (whisper.cpp)")
 
-        hf_repo = model_mapping.get(self.model, f"mlx-community/whisper-{self.model}-mlx")
-
-        kwargs = {
-            "audio": str(audio_path),
-            "path_or_hf_repo": hf_repo,
-            "word_timestamps": True,
-            "batch_size": 12,
-        }
-        if language:
-            kwargs["language"] = language
-
-        console.print(f"[cyan]Модель:[/cyan] {self.model}")
+        cmd = [
+            str(WHISPER_BIN),
+            "-m", str(WHISPER_MODEL),
+            "-f", str(audio_path),
+            "-l", language or "auto",
+            "-oj",  # output JSON
+            "-of", str(output_base),
+        ]
 
         with console.status("[bold green]Транскрибирую..."):
-            result = transcribe_audio(**kwargs)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600
+            )
 
-        # Извлекаем слова с таймкодами
+        if result.returncode != 0:
+            raise RuntimeError(f"Whisper ошибка: {result.stderr}")
+
+        # Парсим JSON вывод
+        if not output_json.exists():
+            raise FileNotFoundError(f"Whisper не создал JSON: {output_json}")
+
+        with open(output_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # Извлекаем слова из сегментов
         words = []
-        for segment in result.get("segments", []):
-            for word_info in segment.get("words", []):
-                # word_info может быть dict или tuple
-                if isinstance(word_info, dict):
+        full_text = ""
+        detected_lang = "auto"
+
+        for segment in data.get("transcription", []):
+            text = segment.get("text", "").strip()
+            if not text:
+                continue
+
+            full_text += text + " "
+
+            # whisper.cpp даёт offsets в миллисекундах
+            start_ms = segment.get("offsets", {}).get("from", 0)
+            end_ms = segment.get("offsets", {}).get("to", 0)
+
+            # Разбиваем на слова, распределяя время равномерно
+            segment_words = text.split()
+            if segment_words:
+                duration = end_ms - start_ms
+                word_duration = duration / len(segment_words)
+
+                for i, word_text in enumerate(segment_words):
+                    word_start = start_ms + i * word_duration
+                    word_end = start_ms + (i + 1) * word_duration
                     words.append(Word(
-                        text=word_info.get("word", "").strip(),
-                        start=word_info.get("start", 0),
-                        end=word_info.get("end", 0),
-                    ))
-                elif isinstance(word_info, (list, tuple)) and len(word_info) >= 3:
-                    words.append(Word(
-                        text=str(word_info[2]).strip(),
-                        start=float(word_info[0]),
-                        end=float(word_info[1]),
+                        text=word_text,
+                        start=word_start / 1000,  # в секунды
+                        end=word_end / 1000,
                     ))
 
-        # Фильтруем пустые слова
-        words = [w for w in words if w.text]
+        # Удаляем временный JSON
+        output_json.unlink(missing_ok=True)
 
         return TranscriptResult(
-            text=result.get("text", ""),
-            language=result.get("language", "unknown"),
+            text=full_text.strip(),
+            language=detected_lang,
             words=words,
         )
